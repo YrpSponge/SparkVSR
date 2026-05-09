@@ -7,7 +7,7 @@ OUT_DIR="results/UDM10/api_ref_num1_indices0_rgs1.0"
 DEVICE="cuda"
 METRICS="psnr,ssim,lpips,dists,clipiqa,niqe,musiq,dover,ewarp,vbench,fastvqa"
 # METRICS="clipiqa,niqe,musiq,dover,ewarp,vbench,fastvqa"
-GPU_ID="6"
+GPU_ID="0"
 FILENAME="all_metrics_results.json"
 
 # Function to display usage

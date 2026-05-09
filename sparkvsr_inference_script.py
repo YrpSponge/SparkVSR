@@ -414,6 +414,9 @@ def process_video_ref_i2v(
     empty_prompt_embedding: torch.Tensor = None,
     ref_guidance_scale: float = 1.0,
 ):
+    '''
+    关键函数
+    '''
     # Decode video
     # video: [B, C, F, H, W]
     # pipe.vae.to(video.device, dtype=video.dtype)
@@ -429,6 +432,7 @@ def process_video_ref_i2v(
     # Prepare Ref Latent
     full_ref_latent = torch.zeros_like(lq_latent)
     
+    # 把每张ref frame填到对应的latent时间位置上
     for i, idx in enumerate(ref_indices):
         if i >= len(ref_frames): break
         
@@ -620,7 +624,7 @@ def main():
     
     # New Arguments
     # New Arguments
-    parser.add_argument("--ref_mode", type=str, default="no_ref", choices=["no_ref", "gt", "api", "pisasr"])
+    parser.add_argument("--ref_mode", type=str, default="no_ref", choices=["no_ref", "gt", "api", "pisasr", "dlora"])
     parser.add_argument("--ref_prompt_mode", type=str, default="fixed", choices=["fixed", "dynamic"], help="fixed: Use static prompt. dynamic: Use VLM analysis.")
     parser.add_argument("--ref_indices", type=int, nargs='*', default=None, help="Manually specify reference frame indices (0-based). Must have interval > 3.")
     parser.add_argument("--ref_guidance_scale", type=float, default=1.0, help="Classifier-Free Guidance scale for reference importance (default: 1.0).")
@@ -631,6 +635,10 @@ def main():
     parser.add_argument("--pisa_sd_model_path", type=str, default=None, help="Path to PiSA-SR Stable Diffusion base model")
     parser.add_argument("--pisa_chkpt_path", type=str, default=None, help="Path to PiSA-SR pisa_sr.pkl weight")
     parser.add_argument("--pisa_gpu", type=str, default="0", help="GPU ID to run PiSA-SR on")
+    parser.add_argument("--dlora_pretrained_path", type=str, default=None, help="Path to DLoRA checkpoint (model_52001.pkl)")
+    parser.add_argument("--dlora_sidechannel_ckpt", type=str, default=None, help="Path to DLoRA SideChannel checkpoint")
+    parser.add_argument("--dlora_flow_estimator", type=str, default="raft", help="DLoRA flow estimator: raft or spynet")
+    parser.add_argument("--dlora_gpu", type=str, default="1", help="GPU ID to run DLoRA on")
     
     args = parser.parse_args()
 
@@ -861,7 +869,7 @@ def main():
                      print(f"Warning: GT frame {idx} not found. Using LQ frame.")
                      ref_frames_list.append(video[0, :, idx]) 
 
-        elif args.ref_mode == "pisasr":
+        elif args.ref_mode == "pisasr": # 重点参考这部分
              import tempfile
              import subprocess
              import shutil
@@ -948,6 +956,62 @@ def main():
                  if not found:
                      print(f"Warning: PiSA-SR frame {idx} not generated. Using LQ frame.")
                      ref_frames_list.append(video[0, :, idx])
+
+
+        elif args.ref_mode == "dlora":
+             import os as _os_dlora
+             _dlora_cwd = "/data3/ryu455/DLoRAL"
+             if _dlora_cwd not in __import__("sys").path:
+                 __import__("sys").path.insert(0, _dlora_cwd)
+             _orig_cwd = _os_dlora.getcwd()
+             _os_dlora.chdir(_dlora_cwd)
+             try:
+                 from src.inference_wrapper import DLoRALInferenceWrapper
+             finally:
+                 _os_dlora.chdir(_orig_cwd)
+             
+             print("Initializing DLoRA (W4+SC) for keyframe enhancement...")
+             dlora_model = DLoRALInferenceWrapper(
+                 pretrained_path=args.dlora_pretrained_path,
+                 flow_estimator=args.dlora_flow_estimator,
+                 sidechannel_ckpt=args.dlora_sidechannel_ckpt,
+             )
+             import torch as _torch_dlora
+             _orig_device = "cuda" if _torch_dlora.cuda.is_available() else "cpu"
+             if args.dlora_gpu is not None:
+                 _os_dlora.environ["CUDA_VISIBLE_DEVICES"] = str(args.dlora_gpu)
+             
+             print(f"DLoRA initialized. Enhancing {len(ref_indices)} keyframe(s)...")
+             
+             for idx in ref_indices:
+                 lr_frame_np = video_lr[idx].cpu().permute(1, 2, 0).numpy().astype("uint8")
+                 print(f"  DLoRA: enhancing keyframe {idx}...")
+                 
+                 # DLoRA uses duplicate frame as context (single-image SR mode)
+                 hr_frames = dlora_model([lr_frame_np, lr_frame_np])
+                 hr_np = hr_frames[0]  # Take the first output frame
+                 
+                 from PIL import Image as _PILImage
+                 hr_pil = _PILImage.fromarray(hr_np)
+                 t_img = transforms.ToTensor()(hr_pil) * 2.0 - 1.0  # [-1, 1]
+                 
+                 # Resize to match target video dimensions
+                 target_h, target_w = video.shape[-2], video.shape[-1]
+                 orig_h, orig_w = t_img.shape[-2], t_img.shape[-1]
+                 print(f"  [DLoRA] Generated reference: {orig_w}x{orig_h} -> target: {target_w}x{target_h}")
+                 
+                 if t_img.shape[-2:] != (target_h, target_w):
+                     t_img = _torch_dlora.nn.functional.interpolate(
+                         t_img.unsqueeze(0),
+                         size=(target_h, target_w),
+                         mode="bilinear",
+                         align_corners=False
+                     ).squeeze(0)
+                 
+                 ref_frames_list.append(t_img)
+                 print(f"  DLoRA: keyframe {idx} enhanced successfully")
+             
+             print(f"DLoRA keyframe enhancement complete.")
 
         elif args.ref_mode == "api":
              print("Fetching API Frames...")
@@ -1039,7 +1103,7 @@ def main():
                     rf_crop = rf[:, h_start:h_end, w_start:w_end]
                     current_ref_frames.append(rf_crop)
 
-                _video_generate = process_video_ref_i2v(
+                _video_generate = process_video_ref_i2v( # 关键函数：ref 帧是如何进模型/被使用的
                     pipe=pipe,
                     video=video_chunk,
                     prompt=prompt,

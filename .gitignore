@@ -1,0 +1,28 @@
+# Model weights and checkpoints
+checkpoints/
+pretrained_weights/
+pretrained_models/
+
+# Datasets
+datasets/
+test_sets/
+test_input/smoke_test_input/
+
+# Results
+results/
+
+# Metrics (large DOVER/FastVQA repos and weights)
+metrics/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+*.log
+.DS_Store
