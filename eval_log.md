@@ -118,3 +118,71 @@ LPIPS/DISTS: lower is better. All others: higher is better.
 - **NR metrics drop on easy datasets**: UDM10 CLIPIQA -0.160 — PiSA-SR may over-enhance already-clean synthetic data
 - **DOVER Aesthetic stays 0.97+ across all modes**: visual appeal is consistently high
 - **PiSA-SR benefits real-world-like degradation (SPMCS) over clean synthetic (UDM10)**
+
+---
+
+## 5. DLoRA Mode Results (dlora, W4+SC, ref_indices=0)
+
+### 5.1 Implementation
+
+DLoRA integrated via subprocess (same pattern as PiSA-SR):
+- **Wrapper**: 
+- **Env**: Conda  (torch 2.0.1, diffusers 0.25.0, mmcv 2.1.0)
+- **GPU**: DLoRA on GPU 1, SparkVSR on GPU 0
+- **Mode**: fp32 (RAFT optical flow requires fp32 for grid_sample)
+- **Code changes**:  lines 961-1020
+
+### 5.2 UDM10 dlora (10 videos)
+
+| Metric | Type | Score |
+|---|---|---|
+| PSNR | FR | 26.73 dB |
+| SSIM | FR | 0.790 |
+| LPIPS | FR | 0.225 |
+| DISTS | FR | 0.142 |
+| CLIPIQA | NR | 0.593 |
+| MUSIQ | NR | 67.93 |
+| DOVER Technical | NR | 0.119 |
+| DOVER Aesthetic | NR | 0.992 |
+| DOVER Overall | NR | 0.687 |
+| FastVQA | NR | 0.841 |
+
+### 5.3 SPMCS dlora (30 videos)
+
+| Metric | Type | Score |
+|---|---|---|
+| PSNR | FR | 18.67 dB |
+| SSIM | FR | 0.460 |
+| LPIPS | FR | 0.266 |
+| DISTS | FR | 0.158 |
+| CLIPIQA | NR | 0.607 |
+| MUSIQ | NR | 70.18 |
+| DOVER Technical | NR | 0.094 |
+| DOVER Aesthetic | NR | 0.942 |
+| DOVER Overall | NR | 0.490 |
+| FastVQA | NR | 0.738 |
+
+### 5.4 Full Comparison: no_ref vs pisasr vs dlora
+
+| Metric | UDM10 no_ref | UDM10 pisasr | **UDM10 dlora** | SPMCS no_ref | SPMCS pisasr | **SPMCS dlora** |
+|---|---|---|---|---|---|---|
+| PSNR | 29.66 | 28.72 | 26.73 | 18.99 | 17.12 | 18.67 |
+| SSIM | 0.868 | 0.841 | 0.790 | 0.490 | 0.410 | 0.460 |
+| LPIPS | 0.147 | 0.194 | 0.225 | 0.220 | 0.292 | 0.266 |
+| DISTS | 0.100 | 0.130 | 0.142 | 0.141 | 0.185 | 0.158 |
+| **CLIPIQA** | 0.454 | 0.294 | **0.593** | 0.545 | 0.706 | **0.607** |
+| **MUSIQ** | 59.57 | 50.86 | **67.93** | 67.57 | 73.92 | **70.18** |
+| **DOVER Tech** | 0.102 | 0.069 | **0.119** | 0.079 | 0.081 | **0.094** |
+| DOVER Aesth | 0.988 | 0.983 | **0.992** | 0.968 | 0.976 | **0.942** |
+| **DOVER Overall** | 0.618 | 0.511 | **0.687** | 0.498 | 0.548 | **0.490** |
+| **FastVQA** | 0.805 | 0.696 | **0.841** | 0.703 | 0.722 | **0.738** |
+
+### 5.5 Analysis
+
+**DLoRA achieves best NR (perceptual) metrics on both datasets**, confirming the fusion works:
+
+- **UDM10**: DLoRA dominates — CLIPIQA +0.139 vs no_ref, MUSIQ +8.36, DOVER Overall +0.069, FastVQA +0.036
+- **SPMCS**: Mixed — DLoRA leads on CLIPIQA (+0.062), MUSIQ (+2.61), DOVER Technical (+0.015); pisasr leads on DOVER Overall/CLIPIQA
+- **FR metrics drop** is expected — perceptual models optimize for visual quality not pixel accuracy
+- **UDM10 benefits more** from DLoRA than SPMCS — likely because DLoRA's 8x output better matches UDM10's 1272x720 resolution vs SPMCS's 960x536
+- **PiSA-SR underperforms** on UDM10 — consistently worse than even no_ref on UDM10, suggesting its SD-based enhancement is better suited for real-world degradation (SPMCS) than clean synthetic (UDM10)

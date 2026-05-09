@@ -959,59 +959,70 @@ def main():
 
 
         elif args.ref_mode == "dlora":
-             import os as _os_dlora
-             _dlora_cwd = "/data3/ryu455/DLoRAL"
-             if _dlora_cwd not in __import__("sys").path:
-                 __import__("sys").path.insert(0, _dlora_cwd)
-             _orig_cwd = _os_dlora.getcwd()
-             _os_dlora.chdir(_dlora_cwd)
-             try:
-                 from src.inference_wrapper import DLoRALInferenceWrapper
-             finally:
-                 _os_dlora.chdir(_orig_cwd)
+             import tempfile
+             import subprocess
+             print("Generating DLoRA Enhanced Keyframes...")
              
-             print("Initializing DLoRA (W4+SC) for keyframe enhancement...")
-             dlora_model = DLoRALInferenceWrapper(
-                 pretrained_path=args.dlora_pretrained_path,
-                 flow_estimator=args.dlora_flow_estimator,
-                 sidechannel_ckpt=args.dlora_sidechannel_ckpt,
-             )
-             import torch as _torch_dlora
-             _orig_device = "cuda" if _torch_dlora.cuda.is_available() else "cpu"
-             if args.dlora_gpu is not None:
-                 _os_dlora.environ["CUDA_VISIBLE_DEVICES"] = str(args.dlora_gpu)
-             
-             print(f"DLoRA initialized. Enhancing {len(ref_indices)} keyframe(s)...")
+             dlora_python = "/home/ryu455/my_storage2_1T/.conda/envs/PiSA-SR/bin/python"
+             dlora_script = "/data3/ryu455/DLoRAL/dloral_keyframe.py"
              
              for idx in ref_indices:
-                 lr_frame_np = video_lr[idx].cpu().permute(1, 2, 0).numpy().astype("uint8")
-                 print(f"  DLoRA: enhancing keyframe {idx}...")
+                 dlora_frame_path = os.path.join(args.output_path, "ref_dlora_cache", Path(video_name).stem, f"{video_name}_frame_{idx:05d}.png")
+                 os.makedirs(os.path.dirname(dlora_frame_path), exist_ok=True)
                  
-                 # DLoRA uses duplicate frame as context (single-image SR mode)
-                 hr_frames = dlora_model([lr_frame_np, lr_frame_np])
-                 hr_np = hr_frames[0]  # Take the first output frame
+                 if not os.path.exists(dlora_frame_path):
+                     print(f"  DLoRA: enhancing keyframe {idx} for {video_name}...")
+                     lr_frame = video_lr[idx].cpu().permute(1, 2, 0).numpy()
+                     with tempfile.TemporaryDirectory() as tmpdir:
+                         lr_path = os.path.join(tmpdir, "input_frame.png")
+                         lr_img = Image.fromarray(lr_frame.astype("uint8"))
+                         lr_img.save(lr_path)
+                         out_dir = os.path.join(tmpdir, "out")
+                         os.makedirs(out_dir, exist_ok=True)
+                         
+                         cmd = [
+                             dlora_python, dlora_script,
+                             "--input_image", lr_path,
+                             "--output_dir", out_dir,
+                             "--pretrained_path", args.dlora_pretrained_path,
+                         ]
+                         if args.dlora_sidechannel_ckpt:
+                             cmd += ["--sidechannel_ckpt", args.dlora_sidechannel_ckpt]
+                         
+                         env = os.environ.copy()
+                         env["CUDA_VISIBLE_DEVICES"] = str(args.dlora_gpu)
+                         env["HF_ENDPOINT"] = "https://hf-mirror.com"
+                         try:
+                             subprocess.run(cmd, env=env, check=True, capture_output=True, text=True, timeout=300)
+                             out_img_path = os.path.join(out_dir, "input_frame.png")
+                             if os.path.exists(out_img_path):
+                                 import shutil
+                                 shutil.copy(out_img_path, dlora_frame_path)
+                                 print(f"  DLoRA: keyframe {idx} enhanced successfully")
+                             else:
+                                 print(f"  Warning: DLoRA output missing for {video_name} frame {idx}!")
+                         except subprocess.CalledProcessError as e:
+                             print(f"  DLoRA subprocess failed: {e.stderr[:300] if e.stderr else 'N/A'}")
+                         except Exception as e:
+                             print(f"  DLoRA error: {e}")
                  
-                 from PIL import Image as _PILImage
-                 hr_pil = _PILImage.fromarray(hr_np)
-                 t_img = transforms.ToTensor()(hr_pil) * 2.0 - 1.0  # [-1, 1]
-                 
-                 # Resize to match target video dimensions
-                 target_h, target_w = video.shape[-2], video.shape[-1]
-                 orig_h, orig_w = t_img.shape[-2], t_img.shape[-1]
-                 print(f"  [DLoRA] Generated reference: {orig_w}x{orig_h} -> target: {target_w}x{target_h}")
-                 
-                 if t_img.shape[-2:] != (target_h, target_w):
-                     t_img = _torch_dlora.nn.functional.interpolate(
-                         t_img.unsqueeze(0),
-                         size=(target_h, target_w),
-                         mode="bilinear",
-                         align_corners=False
-                     ).squeeze(0)
-                 
-                 ref_frames_list.append(t_img)
-                 print(f"  DLoRA: keyframe {idx} enhanced successfully")
-             
-             print(f"DLoRA keyframe enhancement complete.")
+                 if os.path.exists(dlora_frame_path):
+                     img = Image.open(dlora_frame_path).convert("RGB")
+                     t_img = transforms.ToTensor()(img) * 2.0 - 1.0  # [-1, 1]
+                     
+                     target_h, target_w = video.shape[-2], video.shape[-1]
+                     orig_h, orig_w = t_img.shape[-2], t_img.shape[-1]
+                     print(f"  [DLoRA] Generated reference: {orig_w}x{orig_h} -> target: {target_w}x{target_h}")
+                     
+                     if t_img.shape[-2:] != (target_h, target_w):
+                         t_img = torch.nn.functional.interpolate(
+                             t_img.unsqueeze(0), size=(target_h, target_w),
+                             mode="bilinear", align_corners=False
+                         ).squeeze(0)
+                     ref_frames_list.append(t_img)
+                 else:
+                     print(f"  Warning: DLoRA frame {idx} not generated. Using LQ frame.")
+                     ref_frames_list.append(video[0, :, idx])
 
         elif args.ref_mode == "api":
              print("Fetching API Frames...")
