@@ -988,12 +988,13 @@ def main():
                          ]
                          if args.dlora_sidechannel_ckpt:
                              cmd += ["--sidechannel_ckpt", args.dlora_sidechannel_ckpt]
+                         cmd += ["--process_size", "256"]
                          
                          env = os.environ.copy()
                          env["CUDA_VISIBLE_DEVICES"] = str(args.dlora_gpu)
                          env["HF_ENDPOINT"] = "https://hf-mirror.com"
                          try:
-                             subprocess.run(cmd, env=env, check=True, capture_output=True, text=True, timeout=300)
+                             subprocess.run(cmd, env=env, check=True, capture_output=True, text=True, timeout=600)
                              out_img_path = os.path.join(out_dir, "input_frame.png")
                              if os.path.exists(out_img_path):
                                  import shutil
@@ -1002,7 +1003,10 @@ def main():
                              else:
                                  print(f"  Warning: DLoRA output missing for {video_name} frame {idx}!")
                          except subprocess.CalledProcessError as e:
-                             print(f"  DLoRA subprocess failed: {e.stderr[:300] if e.stderr else 'N/A'}")
+                             err_file = f"/tmp/dlora_err_{video_name}_f{idx}.log"
+                             with open(err_file, "w") as ef:
+                                 ef.write(e.stderr if e.stderr else "N/A")
+                             print(f"  DLoRA subprocess failed. Full error: {err_file}")
                          except Exception as e:
                              print(f"  DLoRA error: {e}")
                  

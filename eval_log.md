@@ -186,3 +186,46 @@ DLoRA integrated via subprocess (same pattern as PiSA-SR):
 - **FR metrics drop** is expected — perceptual models optimize for visual quality not pixel accuracy
 - **UDM10 benefits more** from DLoRA than SPMCS — likely because DLoRA's 8x output better matches UDM10's 1272x720 resolution vs SPMCS's 960x536
 - **PiSA-SR underperforms** on UDM10 — consistently worse than even no_ref on UDM10, suggesting its SD-based enhancement is better suited for real-world degradation (SPMCS) than clean synthetic (UDM10)
+
+---
+
+## 6. DLoRA Multi-Keyframe (Strategy 1: Auto-Selection)
+
+### 6.1 Setup
+- Mode: dlora, auto keyframe selection (first/mid/last = 3 keyframes)
+- GPU: Both SparkVSR + DLoRA on GPU 1
+- Fix: Removed PYTORCH_CUDA_ALLOC_CONF from DLoRA subprocess (torch 2.0.1 incompatible)
+- Inference: 30/30 videos, 90/90 DLoRA calls successful, 1h51m
+
+### 6.2 SPMCS dlora_auto (30 videos)
+
+| Metric | Type | Score |
+|---|---|---|
+| PSNR | FR | 18.73 dB |
+| SSIM | FR | 0.461 |
+| LPIPS | FR | 0.267 |
+| DISTS | FR | 0.164 |
+| CLIPIQA | NR | 0.596 |
+| MUSIQ | NR | 69.13 |
+| DOVER Technical | NR | 0.089 |
+| DOVER Aesthetic | NR | 0.943 |
+| DOVER Overall | NR | 0.486 |
+| FastVQA | NR | 0.723 |
+
+### 6.3 SPMCS: 1-keyframe vs 3-keyframe comparison
+
+| Metric | dlora (1 kf) | dlora_auto (3 kf) | Delta |
+|---|---|---|---|
+| PSNR | 18.67 | 18.73 | +0.06 |
+| SSIM | 0.460 | 0.461 | +0.001 |
+| LPIPS | 0.266 | 0.267 | +0.001 |
+| DISTS | 0.158 | 0.164 | +0.006 |
+| CLIPIQA | 0.607 | 0.596 | -0.011 |
+| MUSIQ | 70.18 | 69.13 | -1.05 |
+| DOVER Tech | 0.094 | 0.089 | -0.005 |
+| DOVER Aesth | 0.942 | 0.943 | +0.001 |
+| DOVER Overall | 0.490 | 0.486 | -0.004 |
+| FastVQA | 0.738 | 0.723 | -0.015 |
+
+### 6.4 Key Finding
+For SPMCS (31-frame videos), adding more keyframes (3 vs 1) does NOT improve results — all metrics are near-identical. A single keyframe at frame 0 provides sufficient information for SparkVSR to propagate across these short clips. Future work should focus on adaptive keyframe selection (Strategy 2) for longer videos where propagation distance matters more.
