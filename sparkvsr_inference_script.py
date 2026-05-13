@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Add path for finetune utils
 import sys
+from side_channel import SideChannelWrapper  # DLoRA SideChannel
 sys.path.append(os.getcwd())
 try:
     from finetune.utils.ref_utils import get_ref_frames_api, save_ref_frames_locally
@@ -639,6 +640,7 @@ def main():
     parser.add_argument("--dlora_sidechannel_ckpt", type=str, default=None, help="Path to DLoRA SideChannel checkpoint")
     parser.add_argument("--dlora_flow_estimator", type=str, default="raft", help="DLoRA flow estimator: raft or spynet")
     parser.add_argument("--dlora_gpu", type=str, default="1", help="GPU ID to run DLoRA on")
+    parser.add_argument("--sidechannel_ckpt", type=str, default=None, help="Path to DLoRA SideChannel checkpoint for post-processing")
     
     args = parser.parse_args()
 
@@ -685,6 +687,18 @@ def main():
         pipe.fuse_lora(lora_scale=1.0)
         
     pipe.scheduler = CogVideoXDPMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
+    
+    # Load SideChannel for post-processing enhancement (if provided)
+    sidechannel = None
+    if args.sidechannel_ckpt:
+        print(f"Loading SideChannel from {args.sidechannel_ckpt}...")
+        sidechannel = SideChannelWrapper().cuda().eval()
+        ckpt = torch.load(args.sidechannel_ckpt, map_location="cuda")
+        sd = ckpt["wrapper"] if isinstance(ckpt, dict) and "wrapper" in ckpt else ckpt
+        sidechannel.load_state_dict(sd, strict=True)
+        for p in sidechannel.parameters():
+            p.requires_grad_(False)
+        print("SideChannel loaded.")
     
     if args.is_cpu_offload:
         pipe.enable_sequential_cpu_offload()
@@ -1151,6 +1165,24 @@ def main():
         
         # Save
         video_generate = remove_padding_and_extra_frames(video_generate, pad_f, pad_h*effective_upscale, pad_w*effective_upscale)
+        
+        # SideChannel post-processing enhancement
+        if sidechannel is not None:
+            F_sc = video_generate.shape[2]
+            enhanced_frames = []
+            for f_idx in range(F_sc):
+                y_coarse = video_generate[:, :, f_idx]
+                x_up = torch.nn.functional.interpolate(
+                    video_lr[f_idx:f_idx+1].cuda().float(),
+                    size=(video_generate.shape[-2], video_generate.shape[-1]),
+                    mode="bilinear", align_corners=False
+                )
+                x_up = x_up / 255.0 if x_up.max() > 1.0 else x_up
+                with torch.no_grad():
+                    y_final, _ = sidechannel(x_up, y_coarse, return_aux=True)
+                enhanced_frames.append(y_final.clamp(0, 1))
+            video_generate = torch.stack(enhanced_frames, dim=2)
+        
         file_name = os.path.basename(video_path)
         
         out_file_path = os.path.join(args.output_path, file_name)
