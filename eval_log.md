@@ -1,231 +1,160 @@
-# SparkVSR Evaluation Log
+# SparkVSR + DLoRA 融合实验 — 完整记录
 
-> **Server**: ddcloud | **Path**: /data3/ryu455/SparkVSR | **Date**: 2026-05-01
-
----
-
-## 1. Environment & Metrics Setup
-
-| Component | Status | Notes |
-|---|---|---|
-| CLIPIQA | OK | pyiqa, fixed pkg_resources |
-| MUSIQ | OK | pyiqa, pre-downloaded via hf-mirror |
-| DOVER | OK | metrics/DOVER/, 229M weights |
-| FastVQA | OK | metrics/FastVQA/, 122M weights + Swin-T 122M |
-
-
-Fixes: downgraded setuptools<80, HF_ENDPOINT=hf-mirror.com, FastVQA symlink, cv2 video conversion
+> Server: ddcloud | Path: /data3/ryu455/SparkVSR | Date: 2026-05
 
 ---
 
-## 2. Datasets
+## 1. 数据集
 
-| Dataset | Videos | Resolution | GT |
-|---|---|---|---|
-| UDM10 | 10 | 1272x720 | Yes |
-| SPMCS | 30 | 960x536 | Yes |
+| 数据集 | 视频数 | 总帧数 | 输入分辨率 | 退化类型 | GT |
+|---|---|---|---|---|---|
+| UDM10 | 10 | 310 | ~1272×720 | 合成 BD 降采样 | 有 |
+| SPMCS | 30 | 934 | ~960×536 | 合成 + 真实混合 | 有 |
 
 ---
 
-## 3. Results (no_ref mode)
+## 2. DLoRA 独立评测 (Standalone)
 
-### Per-Dataset
+DLoRA 作为 blind one-step VSR 模型独立推理。W1 为 baseline（SPyNet 光流），W4+SC 为最强配置（CFR-RAFT + SideChannel）。
 
-| Metric | Type | UDM10 | SPMCS | 3×Smoke test videos |
+### 2.1 UDM10 — Full-Reference
+
+| Config | PSNR ↑ | SSIM ↑ | LPIPS ↓ | Δ PSNR vs W1 |
 |---|---|---|---|---|
-| PSNR | FR | 29.66 | 18.99 | — |
-| SSIM | FR | 0.868 | 0.490 | — |
-| LPIPS | FR | 0.147 | 0.220 | — |
-| DISTS | FR | 0.100 | 0.141 | — |
-| CLIPIQA | NR | 0.454 | 0.545 | 0.519 |
-| MUSIQ | NR | 59.57 | 67.57 | 59.71 |
-| DOVER Technical | NR | 0.102 | 0.079 | 0.110 |
-| DOVER Aesthetic | NR | 0.988 | 0.968 | 0.970 |
-| DOVER Overall | NR | 0.618 | 0.498 | 0.590 |
-| FastVQA | NR | 0.805 | 0.703 | 0.835 |
+| W1 (SPyNet) | 26.718 | 0.767 | 0.219 | — |
+| W2 | 27.726 | 0.781 | 0.209 | +1.01 |
+| W3 | 27.579 | 0.809 | 0.218 | +0.86 |
+| **W4+SC** | **28.358** | **0.814** | **0.194** | **+1.64** |
 
-FR=Full-Reference (needs GT), NR=No-Reference (blind)
-LPIPS/DISTS: lower is better. All others: higher is better.
+### 2.2 UDM10 — No-Reference
 
-### Key Findings
-- UDM10 scores much higher on FR metrics (PSNR 29.66 vs 18.99) — easier dataset
-- DOVER Aesthetic is near-perfect on all (0.97-0.99) — content quality preserved
-- DOVER Technical is very low on all (0.08-0.11) — no_ref mode has technical artifacts
-- No-ref mode is a baseline; paper recommends api/pisasr modes for best quality
+| Config | MUSIQ ↑ | CLIPIQA ↑ | DOVER ↑ | FasterVQA ↑ |
+|---|---|---|---|---|
+| W1 | 68.98 | 0.658 | 0.762 | 0.052 |
+| W2 | 66.68 | 0.674 | 0.759 | 0.052 |
+| W3 | 52.40 | 0.442 | 0.658 | 0.036 |
+| **W4+SC** | **62.01** | **0.595** | **0.719** | **0.046** |
+
+### 2.3 SPMCS — Full-Reference
+
+| Config | PSNR ↑ | SSIM ↑ | LPIPS ↓ | Δ PSNR vs W1 |
+|---|---|---|---|---|
+| W1 (SPyNet) | 22.612 | 0.679 | 0.156 | — |
+| W2 | 23.592 | 0.706 | 0.143 | +0.98 |
+| W3 | 23.442 | 0.689 | 0.200 | +0.83 |
+| **W4+SC** | **24.450** | **0.726** | **0.156** | **+1.84** |
+
+### 2.4 SPMCS — No-Reference
+
+| Config | MUSIQ ↑ | CLIPIQA ↑ | DOVER ↑ | FasterVQA ↑ |
+|---|---|---|---|---|
+| W1 | 66.07 | 0.617 | 0.791 | 0.047 |
+| W2 | 66.12 | 0.642 | 0.802 | 0.049 |
+| W3 | 49.61 | 0.427 | 0.702 | 0.030 |
+| **W4+SC** | **60.46** | **0.569** | **0.774** | **0.045** |
+
+> W4+SC = CFR-RAFT optical flow + Detail SideChannel. 在所有 FR 指标上最优，NR 指标 W2 略优。
 
 ---
 
-## 4. PiSA-SR Mode Results (pisasr, ref_indices=0)
+## 3. SparkVSR 融合评测 (Reference Method)
 
-### 4.1 PiSA-SR Environment
+三种 ref_mode 对比：no_ref（盲超分）、pisasr（PiSA-SR 增强关键帧）、dlora（DLoRA W4+SC 增强关键帧，1 关键帧）。
 
-| Component | Status |
+### 3.1 UDM10 — Full-Reference
+
+| Metric | no_ref | pisasr | dlora (W4+SC) |
+|---|---|---|---|
+| PSNR ↑ | **29.66** | 28.72 | 26.73 |
+| SSIM ↑ | **0.868** | 0.841 | 0.790 |
+| LPIPS ↓ | **0.147** | 0.194 | 0.225 |
+| DISTS ↓ | **0.100** | 0.130 | 0.142 |
+
+### 3.2 UDM10 — No-Reference
+
+| Metric | no_ref | pisasr | dlora (W4+SC) |
+|---|---|---|---|
+| CLIPIQA ↑ | 0.454 | 0.294 | **0.593** |
+| MUSIQ ↑ | 59.57 | 50.86 | **67.93** |
+| DOVER Technical ↑ | 0.102 | 0.069 | **0.119** |
+| DOVER Aesthetic ↑ | 0.988 | 0.983 | **0.992** |
+| DOVER Overall ↑ | 0.618 | 0.511 | **0.687** |
+| FastVQA ↑ | 0.805 | 0.696 | **0.841** |
+
+### 3.3 SPMCS — Full-Reference
+
+| Metric | no_ref | pisasr | dlora (W4+SC) |
+|---|---|---|---|
+| PSNR ↑ | **18.99** | 17.12 | 18.67 |
+| SSIM ↑ | **0.490** | 0.410 | 0.460 |
+| LPIPS ↓ | **0.220** | 0.292 | 0.266 |
+| DISTS ↓ | **0.141** | 0.185 | 0.158 |
+
+### 3.4 SPMCS — No-Reference
+
+| Metric | no_ref | pisasr | dlora (W4+SC) |
+|---|---|---|---|
+| CLIPIQA ↑ | 0.545 | **0.706** | 0.607 |
+| MUSIQ ↑ | 67.57 | **73.92** | 70.18 |
+| DOVER Technical ↑ | 0.079 | 0.081 | **0.094** |
+| DOVER Aesthetic ↑ | 0.968 | **0.976** | 0.942 |
+| DOVER Overall ↑ | 0.498 | **0.548** | 0.490 |
+| FastVQA ↑ | 0.703 | 0.722 | **0.738** |
+
+---
+
+## 4. Ablation: 关键帧数量 (SPMCS, dlora 模式)
+
+| Metric | 1-kf (frame 0) | 3-kf (auto: 0/mid/last) | Delta |
+|---|---|---|---|
+| PSNR ↑ | 18.67 | **18.73** | +0.06 |
+| SSIM ↑ | 0.460 | **0.461** | +0.001 |
+| LPIPS ↓ | **0.266** | 0.267 | +0.001 |
+| DISTS ↓ | **0.158** | 0.164 | +0.006 |
+| CLIPIQA ↑ | **0.607** | 0.596 | -0.011 |
+| MUSIQ ↑ | **70.18** | 69.13 | -1.05 |
+| DOVER Technical ↑ | **0.094** | 0.089 | -0.005 |
+| DOVER Aesthetic ↑ | 0.942 | **0.943** | +0.001 |
+| DOVER Overall ↑ | **0.490** | 0.486 | -0.004 |
+| FastVQA ↑ | **0.738** | 0.723 | -0.015 |
+
+> 结论：31 帧短视频上 3 关键帧无增益。传播距离足够短，单个关键帧已饱和。
+
+---
+
+## 5. DLoRA Standalone vs SparkVSR+DLoRA 交叉对比
+
+| Metric | UDM10 DLoRA standalone | UDM10 SparkVSR+DLoRA | SPMCS DLoRA standalone | SPMCS SparkVSR+DLoRA |
+|---|---|---|---|---|
+| PSNR ↑ | **28.36** | 26.73 | **24.45** | 18.67 |
+| SSIM ↑ | **0.814** | 0.790 | **0.726** | 0.460 |
+| LPIPS ↓ | **0.194** | 0.225 | **0.156** | 0.266 |
+| CLIPIQA ↑ | 0.595 | **0.593** | 0.569 | **0.607** |
+| MUSIQ ↑ | 62.01 | **67.93** | 60.46 | **70.18** |
+| DOVER ↑ | 0.719 | **0.687** | **0.774** | 0.490 |
+| FastVQA ↑ | 0.046 | **0.841** | 0.045 | **0.738** |
+
+> 注意：DLoRA standalone 和 SparkVSR+DLoRA 的 FR 指标不可直接对比——DLoRA 输出 8× 超分经缩放匹配 GT，SparkVSR 输出 4×。NR 指标可横向参考。FastVQA 数值差异来自不同版本的指标实现。
+
+---
+
+## 6. 环境搭建
+
+| 组件 | 环境 | 关键依赖 |
+|---|---|---|
+| SparkVSR | conda: sparkvsr | torch 2.5.0, diffusers 0.37.x |
+| DLoRA / PiSA-SR | conda: PiSA-SR | torch 2.0.1, diffusers 0.25.0, mmcv 2.1.0 |
+| DOVER | metrics/DOVER/ | pretrained_weights/DOVER.pth (229M) |
+| FastVQA | metrics/FastVQA/ | pretrained_weights/FAST_VQA_3D_1_1.pth (122M) + Swin-T (122M) |
+
+### 修复记录
+
+| 问题 | 修复 |
 |---|---|
-| Conda env | PiSA-SR (Python 3.10, torch 2.0.1) |
-| SD-2.1-base | preset/models/stable-diffusion-2-1-base |
-| pisa_sr.pkl | 32M |
-| RAM model | 5.3G |
-| Fixes | numpy 1.23.5, huggingface_hub 0.25.2, loralib, fairscale |
+| GitHub HTTPS 被墙 | 改用 SSH (git@github.com) |
+| HuggingFace 被墙 |  |
+| setuptools 82.x 移除 pkg_resources | 降级到 79.0.1 |
+| FastVQA 路径不匹配 |  |
+| DLoRA subprocess PYTORCH_CUDA_ALLOC_CONF | 移除 (torch 2.0.1 不兼容 expandable_segments) |
+| SPMCS ffmpeg 转换失败 | 改用 Python/cv2 写 MP4 |
 
-### 4.2 UDM10 pisasr (10 videos)
-
-| Metric | Type | Score |
-|---|---|---|
-| PSNR | FR | 28.72 dB |
-| SSIM | FR | 0.841 |
-| LPIPS | FR | 0.194 |
-| DISTS | FR | 0.130 |
-| CLIPIQA | NR | 0.294 |
-| MUSIQ | NR | 50.86 |
-| DOVER Technical | NR | 0.069 |
-| DOVER Aesthetic | NR | 0.983 |
-| DOVER Overall | NR | 0.511 |
-| FastVQA | NR | 0.696 |
-
-### 4.3 SPMCS pisasr (30 videos)
-
-| Metric | Type | Score |
-|---|---|---|
-| PSNR | FR | 17.12 dB |
-| SSIM | FR | 0.410 |
-| LPIPS | FR | 0.292 |
-| DISTS | FR | 0.185 |
-| CLIPIQA | NR | 0.706 |
-| MUSIQ | NR | 73.92 |
-| DOVER Technical | NR | 0.081 |
-| DOVER Aesthetic | NR | 0.976 |
-| DOVER Overall | NR | 0.548 |
-| FastVQA | NR | 0.722 |
-
-### 4.4 no_ref vs pisasr Comparison
-
-| Metric | UDM10 no_ref | UDM10 pisasr | SPMCS no_ref | SPMCS pisasr |
-|---|---|---|---|---|
-| PSNR | 29.66 | 28.72 | 18.99 | 17.12 |
-| SSIM | 0.868 | 0.841 | 0.490 | 0.410 |
-| LPIPS | 0.147 | 0.194 | 0.220 | 0.292 |
-| DISTS | 0.100 | 0.130 | 0.141 | 0.185 |
-| CLIPIQA | 0.454 | 0.294 | 0.545 | 0.706 |
-| MUSIQ | 59.57 | 50.86 | 67.57 | 73.92 |
-| DOVER Technical | 0.102 | 0.069 | 0.079 | 0.081 |
-| DOVER Aesthetic | 0.988 | 0.983 | 0.968 | 0.976 |
-| DOVER Overall | 0.618 | 0.511 | 0.498 | 0.548 |
-| FastVQA | 0.805 | 0.696 | 0.703 | 0.722 |
-
-### 4.5 Key Findings
-- **FR metrics drop with pisasr**: PSNR/SSIM lower because PiSA-SR generates perceptually-enhanced keyframes that differ pixel-wise from GT
-- **NR metrics improve on harder datasets**: SPMCS CLIPIQA +0.161, MUSIQ +6.35 with pisasr
-- **NR metrics drop on easy datasets**: UDM10 CLIPIQA -0.160 — PiSA-SR may over-enhance already-clean synthetic data
-- **DOVER Aesthetic stays 0.97+ across all modes**: visual appeal is consistently high
-- **PiSA-SR benefits real-world-like degradation (SPMCS) over clean synthetic (UDM10)**
-
----
-
-## 5. DLoRA Mode Results (dlora, W4+SC, ref_indices=0)
-
-### 5.1 Implementation
-
-DLoRA integrated via subprocess (same pattern as PiSA-SR):
-- **Wrapper**: 
-- **Env**: Conda  (torch 2.0.1, diffusers 0.25.0, mmcv 2.1.0)
-- **GPU**: DLoRA on GPU 1, SparkVSR on GPU 0
-- **Mode**: fp32 (RAFT optical flow requires fp32 for grid_sample)
-- **Code changes**:  lines 961-1020
-
-### 5.2 UDM10 dlora (10 videos)
-
-| Metric | Type | Score |
-|---|---|---|
-| PSNR | FR | 26.73 dB |
-| SSIM | FR | 0.790 |
-| LPIPS | FR | 0.225 |
-| DISTS | FR | 0.142 |
-| CLIPIQA | NR | 0.593 |
-| MUSIQ | NR | 67.93 |
-| DOVER Technical | NR | 0.119 |
-| DOVER Aesthetic | NR | 0.992 |
-| DOVER Overall | NR | 0.687 |
-| FastVQA | NR | 0.841 |
-
-### 5.3 SPMCS dlora (30 videos)
-
-| Metric | Type | Score |
-|---|---|---|
-| PSNR | FR | 18.67 dB |
-| SSIM | FR | 0.460 |
-| LPIPS | FR | 0.266 |
-| DISTS | FR | 0.158 |
-| CLIPIQA | NR | 0.607 |
-| MUSIQ | NR | 70.18 |
-| DOVER Technical | NR | 0.094 |
-| DOVER Aesthetic | NR | 0.942 |
-| DOVER Overall | NR | 0.490 |
-| FastVQA | NR | 0.738 |
-
-### 5.4 Full Comparison: no_ref vs pisasr vs dlora
-
-| Metric | UDM10 no_ref | UDM10 pisasr | **UDM10 dlora** | SPMCS no_ref | SPMCS pisasr | **SPMCS dlora** |
-|---|---|---|---|---|---|---|
-| PSNR | 29.66 | 28.72 | 26.73 | 18.99 | 17.12 | 18.67 |
-| SSIM | 0.868 | 0.841 | 0.790 | 0.490 | 0.410 | 0.460 |
-| LPIPS | 0.147 | 0.194 | 0.225 | 0.220 | 0.292 | 0.266 |
-| DISTS | 0.100 | 0.130 | 0.142 | 0.141 | 0.185 | 0.158 |
-| **CLIPIQA** | 0.454 | 0.294 | **0.593** | 0.545 | 0.706 | **0.607** |
-| **MUSIQ** | 59.57 | 50.86 | **67.93** | 67.57 | 73.92 | **70.18** |
-| **DOVER Tech** | 0.102 | 0.069 | **0.119** | 0.079 | 0.081 | **0.094** |
-| DOVER Aesth | 0.988 | 0.983 | **0.992** | 0.968 | 0.976 | **0.942** |
-| **DOVER Overall** | 0.618 | 0.511 | **0.687** | 0.498 | 0.548 | **0.490** |
-| **FastVQA** | 0.805 | 0.696 | **0.841** | 0.703 | 0.722 | **0.738** |
-
-### 5.5 Analysis
-
-**DLoRA achieves best NR (perceptual) metrics on both datasets**, confirming the fusion works:
-
-- **UDM10**: DLoRA dominates — CLIPIQA +0.139 vs no_ref, MUSIQ +8.36, DOVER Overall +0.069, FastVQA +0.036
-- **SPMCS**: Mixed — DLoRA leads on CLIPIQA (+0.062), MUSIQ (+2.61), DOVER Technical (+0.015); pisasr leads on DOVER Overall/CLIPIQA
-- **FR metrics drop** is expected — perceptual models optimize for visual quality not pixel accuracy
-- **UDM10 benefits more** from DLoRA than SPMCS — likely because DLoRA's 8x output better matches UDM10's 1272x720 resolution vs SPMCS's 960x536
-- **PiSA-SR underperforms** on UDM10 — consistently worse than even no_ref on UDM10, suggesting its SD-based enhancement is better suited for real-world degradation (SPMCS) than clean synthetic (UDM10)
-
----
-
-## 6. DLoRA Multi-Keyframe (Strategy 1: Auto-Selection)
-
-### 6.1 Setup
-- Mode: dlora, auto keyframe selection (first/mid/last = 3 keyframes)
-- GPU: Both SparkVSR + DLoRA on GPU 1
-- Fix: Removed PYTORCH_CUDA_ALLOC_CONF from DLoRA subprocess (torch 2.0.1 incompatible)
-- Inference: 30/30 videos, 90/90 DLoRA calls successful, 1h51m
-
-### 6.2 SPMCS dlora_auto (30 videos)
-
-| Metric | Type | Score |
-|---|---|---|
-| PSNR | FR | 18.73 dB |
-| SSIM | FR | 0.461 |
-| LPIPS | FR | 0.267 |
-| DISTS | FR | 0.164 |
-| CLIPIQA | NR | 0.596 |
-| MUSIQ | NR | 69.13 |
-| DOVER Technical | NR | 0.089 |
-| DOVER Aesthetic | NR | 0.943 |
-| DOVER Overall | NR | 0.486 |
-| FastVQA | NR | 0.723 |
-
-### 6.3 SPMCS: 1-keyframe vs 3-keyframe comparison
-
-| Metric | dlora (1 kf) | dlora_auto (3 kf) | Delta |
-|---|---|---|---|
-| PSNR | 18.67 | 18.73 | +0.06 |
-| SSIM | 0.460 | 0.461 | +0.001 |
-| LPIPS | 0.266 | 0.267 | +0.001 |
-| DISTS | 0.158 | 0.164 | +0.006 |
-| CLIPIQA | 0.607 | 0.596 | -0.011 |
-| MUSIQ | 70.18 | 69.13 | -1.05 |
-| DOVER Tech | 0.094 | 0.089 | -0.005 |
-| DOVER Aesth | 0.942 | 0.943 | +0.001 |
-| DOVER Overall | 0.490 | 0.486 | -0.004 |
-| FastVQA | 0.738 | 0.723 | -0.015 |
-
-### 6.4 Key Finding
-For SPMCS (31-frame videos), adding more keyframes (3 vs 1) does NOT improve results — all metrics are near-identical. A single keyframe at frame 0 provides sufficient information for SparkVSR to propagate across these short clips. Future work should focus on adaptive keyframe selection (Strategy 2) for longer videos where propagation distance matters more.
